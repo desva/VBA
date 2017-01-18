@@ -138,6 +138,14 @@ Public Sub GetProcessInfo()
     Call RenderOutput(dct)
 End Sub
 
+Private Function ConvLong(ByVal lng As Long) As Currency
+    If (lng > 0) Then
+        ConvLong = CCur(lng)
+    Else
+        ConvLong = 2 ^ 31 + lng + 1
+    End If
+End Function
+
 Private Sub GetProcInfoEx(ByRef dctIn As Dictionary)
     Dim MS As MEMORYSTATUS
     Dim SI As SYSTEM_INFO
@@ -151,14 +159,14 @@ Private Sub GetProcInfoEx(ByRef dctIn As Dictionary)
     Call GetProcessMemoryInfo(GetCurrentProcess, PMC, Len(PMC))
     
     Call dctIn.Add("Memory Load/%", MS.dwMemoryLoad)
-    Call dctIn.Add("Total Physical/K", Format(Fix(MS.dwTotalPhys / 1024), "###,###"))
-    Call dctIn.Add("Available Physical/K", Format(Fix(MS.dwAvailPhys / 1024), "###,###"))
-    Call dctIn.Add("Total Virtual/K", Format(Fix(MS.dwTotalVirtual / 1024), "###,###"))
-    Call dctIn.Add("Available Virtual/K", Format(Fix(MS.dwAvailVirtual / 1024), "###,###"))
-    Call dctIn.Add("Process VM Space/K", Format(Fix((SI.lpMaximumApplicationAddress - SI.lpMinimumApplicationAddress + 1) / 1024), "###,###"))
-    Call dctIn.Add("Page file usage/K", Format(Fix(PMC.PagefileUsage / 1024), "###,###"))
-    Call dctIn.Add("Working set size/K", Format(Fix(PMC.WorkingSetSize / 1024), "###,###"))
-    Call dctIn.Add("Page fault count", Format(Fix(PMC.PageFaultCount), "###,###"))
+    Call dctIn.Add("Total Physical/K", Format(Fix(ConvLong(MS.dwTotalPhys) / 1024), "###,###"))
+    Call dctIn.Add("Available Physical/K", Format(Fix(ConvLong(MS.dwAvailPhys) / 1024), "###,###"))
+    Call dctIn.Add("Total Virtual/K", Format(Fix(ConvLong(MS.dwTotalVirtual) / 1024), "###,###"))
+    Call dctIn.Add("Available Virtual/K", Format(Fix(ConvLong(MS.dwAvailVirtual) / 1024), "###,###"))
+    Call dctIn.Add("Process VM Space/K", Format(Fix((ConvLong(SI.lpMaximumApplicationAddress) - ConvLong(SI.lpMinimumApplicationAddress) + 1) / 1024), "###,###"))
+    Call dctIn.Add("Page file usage/K", Format(Fix(ConvLong(PMC.PagefileUsage) / 1024), "###,###"))
+    Call dctIn.Add("Working set size/K", Format(Fix(ConvLong(PMC.WorkingSetSize) / 1024), "###,###"))
+    Call dctIn.Add("Page fault count", Format(Fix(ConvLong(PMC.PageFaultCount)), "###,###"))
     Call dctIn.Add("GDI Objects", Format(Fix(GetGuiResources(GetCurrentProcess(), 0)), "###,###"))
     Call dctIn.Add("USER Objects", Format(Fix(GetGuiResources(GetCurrentProcess(), 1)), "###,###"))
     Call dctIn.Add("Page Size", SI.dwPageSize)
@@ -190,16 +198,19 @@ Private Sub GetProcInfoEx(ByRef dctIn As Dictionary)
         Call dctIn.Add("Read-write pages", Format(Fix(nRW), "###,###"))
     End If
     ' Attempt to create a map of the entire process space
-    i = SI.lpMinimumApplicationAddress
+    Dim ii As Currency
+    ii = ConvLong(SI.lpMinimumApplicationAddress)
     Dim dctMemMap As Dictionary
     Set dctMemMap = New Dictionary
     Dim MBI As MEMORY_BASIC_INFORMATION
     Do
-        Call VirtualQuery(i, MBI, Len(MBI))
-        Call dctMemMap.Add(i, MBI.AllocationProtect + MBI.State + MBI.Protect + MBI.Type)
-        i = i + MBI.RegionSize
-    Loop While (i <= SI.lpMaximumApplicationAddress)
-    Call dctMemMap.Add(SI.lpMaximumApplicationAddress, 0)
+        Call VirtualQuery(ii, MBI, Len(MBI))
+        Call dctMemMap.Add(ii, MBI.AllocationProtect + MBI.State + MBI.Protect + MBI.Type)
+        ii = ii + MBI.RegionSize
+    Loop While (ii <= ConvLong(SI.lpMaximumApplicationAddress))
+    If Not dctMemMap.Exists(ConvLong(SI.lpMaximumApplicationAddress)) Then
+        Call dctMemMap.Add(ConvLong(SI.lpMaximumApplicationAddress), 0)
+    End If
     Set dctIn("Memory map") = dctMemMap
 End Sub
 
@@ -227,8 +238,31 @@ Private Sub RenderMemoryMap(ByRef d As Dictionary)
     Set tgt = ThisWorkbook.Names("VMMAP").RefersToRange
     Dim i As Long
     k1 = d.Keys
+    Dim v As Long
+    Dim strState As String
+    Dim strType As String
+    i = 0
+    tgt.Offset(i).Resize(1, 5) = Array("Address", "Size/K", "State", "Type", "Size")
     For Each k In d
-        tgt.Offset(i).Resize(1, 3) = Array("0x" & Hex(k), (k1(i + 1) - k) / 1024, "0x" & Hex(d(k)))
+        v = d(k)
+        If (v And &H10000) Then
+            strState = "FREE"
+        ElseIf (v And &H1000) Then
+            strState = "COMMITTED"
+        ElseIf (v And &H2000) Then
+            strState = "RESERVED"
+        End If
+        If (v And &H1000000) Then
+            strType = "IMAGE"
+        ElseIf (v And &H40000) Then
+            strType = "MAPPED"
+        ElseIf (v And &H20000) Then
+            strType = "PRIVATE"
+        Else
+            strType = ""
+        End If
+        tgt.Offset(i + 1).Resize(1, 5) = Array("0x" & Hex(k), (k1(i + 1) - k) / 1024, strState, strType, "0x" & Hex(v))
         i = i + 1
+        If (i = UBound(k1)) Then Exit For
     Next
 End Sub
