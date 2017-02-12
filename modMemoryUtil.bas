@@ -10,13 +10,10 @@ Option Explicit
 
 ' (c) 2017 Dr. D. Azzopardi
 
-' Requires reference to
-' Microsoft scripting runtime (for dictionary)
-' Renders results to a sheet called Report (cstrReportSheet)
-
 ' 32-bit only for now
 
-Private Const ModuleVersion As String = "1.0.2"
+' v1.0.3 - remove early binding to Scripting Dictionary - not performance sensitive
+Private Const ModuleVersion As String = "1.0.3"
 
 Private Type MEMORYSTATUS
    dwLength As Long
@@ -104,9 +101,9 @@ Private Const DONT_RESOLVE_DLL_REFERENCES = &H1
 Private Const cstrReportSheet As String = "Report"
  
 Private m_arrModules() As Variant   ' Module information
-Private m_dctModSizes As Dictionary ' Module sizes
-Private m_dctOutput As Dictionary   ' Output
-Private m_dctMemMap As Dictionary   ' Process space memory map
+Private m_dctModSizes As Object
+Private m_dctOutput As Object
+Private m_dctMemMap As Object
  
 Public Sub GetProcessInfo()
     Dim sht As Worksheet
@@ -118,7 +115,7 @@ Public Sub GetProcessInfo()
     
     Application.ScreenUpdating = False
     Call ResetReport
-    Set m_dctOutput = New Dictionary
+    Set m_dctOutput = CreateObject("Scripting.Dictionary")
     Call EnumerateModules
     Call GetProcInfoEx
     Call RenderMemoryMap
@@ -149,7 +146,7 @@ Private Sub EnumerateModules()
     Dim bXll As Boolean, bCom As Boolean
     Dim tgt As Range
     Dim vOut As Variant
-    Set m_dctModSizes = New Dictionary
+    Set m_dctModSizes = CreateObject("Scripting.Dictionary")
     If hProcess Then
         ReDim lModules(1023)
         If EnumProcessModules(hProcess, lModules(0), 1024 * 4, lRet) Then
@@ -287,10 +284,10 @@ Private Sub GetProcInfoEx()
     ' Create a map of the entire process space
     Dim ii As Currency
     ii = ConvLong(SI.lpMinimumApplicationAddress)
-    Set m_dctMemMap = New Dictionary
+    Set m_dctMemMap = CreateObject("Scripting.Dictionary")
     Dim MBI As MEMORY_BASIC_INFORMATION
     Do
-        Call VirtualQuery(ii, MBI, Len(MBI))
+        Call VirtualQuery(ConvCcy(ii), MBI, Len(MBI))
         Call m_dctMemMap.Add(ii, MBI.AllocationProtect + MBI.State + MBI.Protect + MBI.Type)
         ii = ii + MBI.RegionSize
     Loop While (ii <= ConvLong(SI.lpMaximumApplicationAddress))
@@ -396,7 +393,7 @@ Private Sub RenderMemoryMap()
         Else
             strPrevImg = ""
         End If
-        vOut(i + 1, 0) = "0x" & Hex(k)
+        vOut(i + 1, 0) = HexStr(k)
         vOut(i + 1, 1) = Format(nSizeKB, "###,###")
         vOut(i + 1, 2) = strState
         vOut(i + 1, 3) = strType
@@ -432,8 +429,8 @@ Private Sub RenderModules()
         vLine = Split(m_arrModules(i, 1), "|")
         If (CLng(vLine(0)) > 0) Then
             vOut(j, 0) = vLine(1)
-            vOut(j, 1) = "0x" & Hex(m_arrModules(i, 0))
-            vOut(j, 2) = "0x" & Hex(vLine(0))
+            vOut(j, 1) = HexStr(m_arrModules(i, 0))
+            vOut(j, 2) = Format(Fix(vLine(0) / 1024), "###,###")
             strType = ""
             If (vLine(2)) Then strType = "Xll "
             If (vLine(3)) Then strType = strType & " COM"
@@ -449,7 +446,23 @@ Private Function ConvLong(ByVal lng As Long) As Currency
     If (lng >= 0) Then
         ConvLong = CCur(lng)
     Else
-        ConvLong = 2 ^ 31 + lng + 1
+        ConvLong = 2 ^ 32 + lng
+    End If
+End Function
+
+Private Function ConvCcy(ByVal ccy As Currency) As Long
+    If (ccy > &H7FFFFFFF) Then ' Max signed long
+        ConvCcy = ccy - 2 ^ 32
+    Else
+        ConvCcy = ccy
+    End If
+End Function
+
+Private Function HexStr(ByVal ccy As Currency) As String
+    If (ccy < &H7FFFFFFF) Then
+        HexStr = "0x" & Format(Hex(ccy), "00000000;;")
+    Else
+        HexStr = "0x" & Format(Hex(ccy / 65536), "0000;;") & Format(Hex(ccy - (ccy / 65536) * 65536), "0000;;")
     End If
 End Function
 
