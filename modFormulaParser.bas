@@ -1,6 +1,12 @@
 Attribute VB_Name = "modFormulaParser"
 Option Explicit
 
+' Formula parsing
+' Based on Rob van Gelder's parser, which is a port of Eric W. Bachtal's javascript parser
+' Updated to do RC type formulas, Excel 2007 expanded sheet size
+' Bug fix (to do) - inaccurate reference resolution for
+
+
 Public Const tkt_Operand = 2 ^ 0
 Public Const tkt_OperandUnknown = tkt_Operand Or 2 ^ 1
 Public Const tkt_OperandText = tkt_Operand Or 2 ^ 2
@@ -34,6 +40,7 @@ Public Const tkt_ArrayRow = 2 ^ 24
 Public Const tkt_Begin = 2 ^ 25
 Public Const tkt_End = 2 ^ 26
 
+'States we can be in as we parse string
 Private Const cStateDefault = 2 ^ 0
 Private Const cStateArray = 2 ^ 1
 Private Const cStateText = 2 ^ 2
@@ -316,7 +323,7 @@ Public Function ParseFormula(strFormula As String) As Token()
                 If UCase(str) = UCase(True) Or UCase(str) = UCase(False) Then
                     udtTokens(i).lngType = tkt_OperandBoolean
                 Else
-                    If IsReferenceA1(str) Or IsReferenceRC(str) Then
+                    If IsReferenceA1orRC(str) Then
                         udtTokens(i).lngType = tkt_OperandReferenceRange
                     Else
                         udtTokens(i).lngType = tkt_OperandReferenceName
@@ -335,12 +342,14 @@ Public Function TokenCount(udtTokens() As Token)
 End Function
 
 Private Function IsColumn(strReference As String) As Boolean
+' relative: A:A,C[-1]; Absolute: $A:$A, C[2]
     Dim str As String, i As Long, bln As Boolean
-
     i = 1
     If Left(strReference, 1) = "$" Then i = i + 1
     str = UCase(Mid(strReference, i))
-    If str Like "[A-H][A-Z]" Or str Like "I[A-V]" Then
+    If str Like "[A-W][A-Z][A-Z]" Or str Like "X[A-E][A-Z]" Or str Like "XF[A-D]" Then
+        bln = True
+    ElseIf str Like "[A-Z][A-Z]" Or str Like "I[A-V]" Then
         bln = True
     ElseIf str Like "[A-Z]" Then
         bln = True
@@ -351,6 +360,8 @@ Private Function IsColumn(strReference As String) As Boolean
 End Function
 
 Private Function IsRow(strReference As String) As Boolean
+' relative: 2:2,R[-1]; Absolute: $2:$2, R[2]
+
     Dim str As String, i As Long, lng As Long, bln As Boolean
 
     bln = True
@@ -370,11 +381,7 @@ Private Function IsRow(strReference As String) As Boolean
     IsRow = bln
 End Function
 
-Private Function IsReferenceRC(strReference As String) As Boolean
-    IsReferenceRC = (strReference Like "R*C*") Or (Left(strReference, 2) = "R[") Or (Left(strReference, 2) = "C[")
-End Function
-
-Private Function IsReferenceA1(strReference As String) As Boolean
+Private Function IsReferenceA1orRC(strReference As String) As Boolean
     Dim str As String, i As Long, lng As Long, bln As Boolean
 
     bln = True
@@ -405,24 +412,21 @@ Private Function IsReferenceA1(strReference As String) As Boolean
             bln = False
         End If
     End If
-
-    IsReferenceA1 = bln
+    ' Also deal with RC type references
+    IsReferenceA1orRC = bln Or (strReference Like "R*C*") Or (Left(strReference, 2) = "R[") Or (Left(strReference, 2) = "C[")
 End Function
 
 Private Sub TokenPush(udtTokens() As Token, strValue As String, lngType As Long)
     Dim i As Long
-
     i = TokenCount(udtTokens()) + 1
     ReDim Preserve udtTokens(i)
     udtTokens(i).strValue = strValue
     udtTokens(i).lngType = lngType
-
     strValue = ""
 End Sub
 
 Private Function TokenPop(udtTokens() As Token, blnRemove As Boolean, Optional lngOffset As Long = -1) As Token
     Dim i As Long, lngBound As Long
-
     lngBound = -1: On Error GoTo e: lngBound = UBound(udtTokens): On Error GoTo 0
     If lngOffset <> -1 Then i = lngOffset Else i = lngBound
     TokenPop.strValue = udtTokens(i).strValue
@@ -444,7 +448,6 @@ End Function
 
 Public Function TokenTypeDescription(TokenType As Long) As String
     Dim str As String
-
     Select Case TokenType
         Case tkt_OperandUnknown: str = "Operand Unknown"
         Case tkt_OperandText: str = "Operand Text"
@@ -624,4 +627,72 @@ Public Sub SheetDependencies()
     Call WriteOutput(wb, dOutput)
     Application.ScreenUpdating = True
     Application.EnableEvents = True
+End Sub
+
+Private Function UnitTest(ByVal strIn As String, ByVal bOutput As Boolean) As String
+    Dim a() As Token, t As Token, i As Long, str As String
+    a = ParseFormula(strIn)
+    If bOutput Then Debug.Print strIn
+    str = "["
+    For i = LBound(a) To UBound(a)
+        t = a(i)
+        If bOutput Then Debug.Print t.strValue & vbTab & ": " & TokenTypeDescription(t.lngType)
+        str = str & "[" & t.strValue & "," & Hex(t.lngType) & "];"
+    Next
+    str = Left(str, Len(str) - 1) & "]"
+    UnitTest = str
+End Function
+
+Public Sub TestMe()
+    Dim strTests, v, u, strValidate
+    strTests = "SUM(XEB:XEB)@" & _
+                "SUM(C[1])@" & _
+                "SUM(R2)@" & _
+                "SUM($2:$2)@" & _
+                "SUM(2:2)@" & _
+                "INDEX(Name,1,2)@" & _
+                "+(A1=B1)@" & _
+                "NOT(RC[1]<>+RC[2])@" & _
+                "SUM('Sheet1'!A1:A10)@" & _
+                "SUM(Sheet1:Sheet3!A1:C5)@" & _
+                "SUM('A1:A3'!A1:C5)@" & _
+                "SUM('Sheet1'!A1:'Sheet1'!A10)@"
+    strTests = strTests & _
+                "IF(TODAY(),Function(Named.Range,""String"",""CCY""))@" & _
+                "Function1(Funk(""V"",{""String"",""string""},VolatileFunction()))@" & _
+                "CreateThing(NamedRange,""Close"",R[2]C)@" & _
+                "ComplexFunc(R4C4,fun1(R[2]C:R[18]C,R[2]C17:R[18]C17),Fun2(R[2]C:R[18]C,R[2]C18:R[18]C18),Fun3(R[2]C:R[18]C,R[2]C24:R[18]C24),Fun4(R[2]C:R[18]C,R[2]C22:R[18]C22),Fun0(R[2]C:R[18]C,R[2]C21:R[18]C21),Fun0(R[2]C:R[18]C,R[2]C20:R[18]C20),Fun0(R[2]C:R[18]C,R[2]C:R[18]C),Fun0(R[2]C:R[18]C,ISNUMBER(R[2]C:R[18]C)),""Argument1"")@" & _
+                "RC[-22]&""Y""@" & _
+                "IFERROR(Lookup(R30C3,""Ticker"",RC[-22],""Value"")/100,"""")@" & _
+                "IF(R[-1]C24="""","""",R[-1]C24&""-"")&RC24@" & _
+                "BBGCall(Foo(R[-17]C:R[-1]C[12],,1))@" & _
+                "IFERROR(10000*(R[-2]C-R[-3]C),"""")@" & _
+                "IF(MOD(dates.today,7)>1.75,IF(MOD(dates.today,7)<2,BumpDate(dates.today,""0d""),dates.today),BumpDate(dates.today,""0m"",,""Preceding""))@" & _
+                "IF(AND(MONTH(R[-1]C[1])=7,R[-12]C[3]),""6M"", ""1Y"")" & _
+                "-13@" & _
+                "-13/2+8*RC[-1]-3/2*RC[-1]^2@" & _
+                "IF(bUseName,IF(reports.useReport,R[1]C,FuncCreate(initial.Name,Fun1(FullRefresh!R7C21:R302C21,FullRefresh!R7C11:R302C11),Fun2(FullRefresh!R7C21:R302C21,FullRefresh!R7C12:R302C12),Fun3(FullRefresh!R7C21:R302C21,JacobianRefresh!R7C17:R302C17),Fun6(FullRefresh!R7C21:R302C21,FullRefresh!R7C10:R302C10),Fun0(FullRefresh!R7C21:R302C21,FullRefresh!R7C9:R302C9))))@" & _
+                """FilterIt(WakeTime(CreateReport(""""""&RC[-4]&"""""",""""""&RC[-3]&"""""",""""{term}"""",""""""&RC[-2]&""""""),""""""&TEXT(closeDate-200,""dd-mmm-yyyy"")&"""""",""""""&TEXT(closeDate,""dd-mmm-yyyy"")&""""""),""""""&RC[-5]&"""""")""@" & _
+                "SUM(R[7])@" & _
+                "FetchReport(Output.Filtered,RC[-1])@" & _
+                "INDEX(Project1Y!R58,1,MATCH(Project1Y!R[6]C[-1],2Y!R18,0))@" & _
+                "VLOOKUP(RC109,C1:C5,MATCH(R2C,R2C109:R2C113,0),0)@" & _
+                "#REF!@" & _
+                "IFERROR(1*'Data (raw data)'!R[3]C, """")@"
+    strTests = strTests & _
+                "'Estimate (raw data)'!RC[5]=""Passive""@" & _
+                "N(12)@" & _
+                "InFill(rates.data, """",TRUE)@" & _
+                "SUM(INDIRECT(ADDRESS(ROW(),COLUMN()+1)):INDIRECT(ADDRESS(ROW(),COLUMN()+3*Items.Count+1)))"
+
+    ' problematic:
+    strTests = "SUM(Sheet1:Sheet3!A1:C5)@SUM('Sheet1'!A1:'Sheet1'!A10)@"
+    strTests = "SUM(Sheet1!A1:Sheet1!A10)"
+    v = Split(strTests, "@")
+    strValidate = ""
+    For Each u In v
+        'Debug.Print String$(60, "=")
+        strValidate = UnitTest("=" & u, True) & ";"
+        Debug.Print strValidate
+    Next
 End Sub
