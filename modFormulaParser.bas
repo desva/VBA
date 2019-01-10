@@ -3,10 +3,7 @@ Option Explicit
 
 ' Formula parsing
 ' Based on Rob van Gelder's parser, which is a port of Eric W. Bachtal's javascript parser
-' Updated to do RC type formulas, Excel 2007 expanded sheet size
-' Bug fix (to do) - inaccurate reference resolution for
-
-
+' Updated to do RC type formulas, Excel 2007 expanded sheet size, and recognize Sheet1!a1:Sheet1!b2 references correctly
 Public Const tkt_Operand = 2 ^ 0
 Public Const tkt_OperandUnknown = tkt_Operand Or 2 ^ 1
 Public Const tkt_OperandText = tkt_Operand Or 2 ^ 2
@@ -150,6 +147,15 @@ Public Function ParseFormula(strFormula As String) As Token()
                         str = udtTokens(j - 1).strValue & ":" & str
                         TokenPop udtTokens(), True
                         TokenPop udtTokens(), True
+                    End If
+                End If
+                If j >= 2 Then
+                    If (udtTokens(j - 2).lngType And (tkt_OperatorInfix Or tkt_OperatorReference)) = (tkt_OperatorInfix Or tkt_OperatorReference) And (InStr(1, str, ":") > 0) Then
+                      ' Not a 3D reference
+                      ' pop one more, re-push as reference, adjust string
+                        TokenPop udtTokens(), True
+                        TokenPush udtTokens(), Left(str, InStr(1, str, ":") - 1), tkt_OperandUnknown
+                        str = Mid(str, InStr(1, str, ":") + 1)
                     End If
                 End If
                 TokenPush udtTokens(), str, IIf(InStr(1, str, ":") = 0, tkt_OperandReferenceWksQual, tkt_OperandReference3DWksQual)
@@ -485,18 +491,18 @@ Public Function TokenTypeDescription(TokenType As Long) As String
 End Function
 
 Private Function GatherNames(wb As Workbook) As Object
-    Dim d As Object, nm As name, c
+    Dim d As Object, nm As Name, c
     Set d = CreateObject("Scripting.Dictionary")
     On Error Resume Next
     For Each nm In wb.Names
-        If InStr(1, nm.name, "!") > 0 Then
-            Call d.Add(nm.name, nm.Parent.name)
+        If InStr(1, nm.Name, "!") > 0 Then
+            Call d.Add(nm.Name, nm.Parent.Name)
         Else
-            c = nm.RefersToRange.Parent.name
+            c = nm.RefersToRange.Parent.Name
             If c <> "" Then
-                Call d.Add(nm.name, c)
+                Call d.Add(nm.Name, c)
             Else
-                Call d.Add(nm.name, "Error: " & nm.name)
+                Call d.Add(nm.Name, "Error: " & nm.Name)
             End If
         End If
     Next
@@ -515,8 +521,8 @@ Private Function GatherDependencies(wb As Workbook) As Object
     For Each ws In wb.Worksheets
         Set d2 = CreateObject("Scripting.Dictionary") ' Unique RC formulas
         Set d3 = CreateObject("Scripting.Dictionary") ' Reference -> weight
-        Set d(ws.name) = d2
-        Set d(cRefID & ws.name) = d3
+        Set d(ws.Name) = d2
+        Set d(cRefID & ws.Name) = d3
         i = 0
         Err.Clear
         Set r = ws.UsedRange.SpecialCells(xlCellTypeFormulas)
@@ -548,7 +554,7 @@ Private Function GatherDependencies(wb As Workbook) As Object
                 End If
             Next
         End If
-    Debug.Print ws.name & ": " & i & " unique formulas parsed. (" & Now & ")"
+    Debug.Print ws.Name & ": " & i & " unique formulas parsed. (" & Now & ")"
     Next
     Set GatherDependencies = d
 End Function
@@ -657,7 +663,7 @@ Public Sub TestMe()
                 "SUM(Sheet1:Sheet3!A1:C5)@" & _
                 "SUM('A1:A3'!A1:C5)@" & _
                 "SUM('Sheet1'!A1:'Sheet1'!A10)@"
-    strTests = strTests & _
+        strTests = strTests & _
                 "IF(TODAY(),Function(Named.Range,""String"",""CCY""))@" & _
                 "Function1(Funk(""V"",{""String"",""string""},VolatileFunction()))@" & _
                 "CreateThing(NamedRange,""Close"",R[2]C)@" & _
@@ -686,13 +692,14 @@ Public Sub TestMe()
                 "SUM(INDIRECT(ADDRESS(ROW(),COLUMN()+1)):INDIRECT(ADDRESS(ROW(),COLUMN()+3*Items.Count+1)))"
 
     ' problematic:
-    strTests = "SUM(Sheet1:Sheet3!A1:C5)@SUM('Sheet1'!A1:'Sheet1'!A10)@"
-    strTests = "SUM(Sheet1!A1:Sheet1!A10)"
+    'strTests = "SUM(Sheet1:Sheet3!A1:C5)@SUM('Sheet1'!A1:'Sheet1'!A10)@SUM(Sheet1!R[-1]C:Sheet1!R[2]C[2])"
+    'strTests = "=IF(bUseName,IF(reports.useReport,R[1]C,FuncCreate(initial.Name,Fun1(FullRefresh!R7C21:R302C21,FullRefresh!R7C11:R302C11),Fun2(FullRefresh!R7C21:R302C21,FullRefresh!R7C12:R302C12),Fun3(FullRefresh!R7C21:R302C21,JacobianRefresh!R7C17:R302C17),Fun6(FullRefresh!R7C21:R302C21,FullRefresh!R7C10:R302C10),Fun0(FullRefresh!R7C21:R302C21,FullRefresh!R7C9:R302C9))))"
     v = Split(strTests, "@")
     strValidate = ""
     For Each u In v
-        'Debug.Print String$(60, "=")
-        strValidate = UnitTest("=" & u, True) & ";"
-        Debug.Print strValidate
+        Debug.Print String$(60, "=")
+        strValidate = strValidate & UnitTest("=" & u, True) & ";"
+        'Debug.Print strValidate
     Next
 End Sub
+
